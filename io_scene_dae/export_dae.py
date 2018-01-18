@@ -1249,6 +1249,13 @@ class DaeExporter:
             S_NODES, 6,
             "<empty_draw_type>{}</empty_draw_type>".format(
                 node.empty_draw_type))
+        # if group-instance set name of the corresponding blender-group-scene        
+        if (node.dupli_type=="GROUP"):
+            self.writel(
+                S_NODES, 6,
+                "<group_scene_path>{}</group_scene_path>".format(
+                    node.dupli_group.name+".dae"))
+
         self.writel(S_NODES, 5, "</technique>")
         self.writel(S_NODES, 4, "</extra>")
 
@@ -1464,7 +1471,10 @@ class DaeExporter:
         bpy.context.scene.objects.active = prev_node
 
     def is_node_valid(self, node):
+        print("CHECK:%s" % node.name)
+
         if (node.type not in self.config["object_types"]):
+            print("a")
             return False
 
         if (self.config["use_active_layers"]):
@@ -1474,11 +1484,15 @@ class DaeExporter:
                     valid = True
                     break
             if (not valid):
+                print("b")
                 return False
 
+        print("CEHCL valid %s - %s" % (self.config["use_export_selected"],node.select))
         if (self.config["use_export_selected"] and not node.select):
+            print("c")
             return False
 
+        print("valid %s - %s" % (self.config["use_export_selected"],node.select))
         return True
 
     def export_scene(self):
@@ -1487,6 +1501,7 @@ class DaeExporter:
             S_NODES, 1, "<visual_scene id=\"{}\" name=\"scene\">".format(
                 self.scene_name))
 
+        print("BEFORE:%s" % self.valid_nodes)
         for obj in self.scene.objects:
             if (obj in self.valid_nodes):
                 continue
@@ -1495,7 +1510,14 @@ class DaeExporter:
                 while (n is not None):
                     if (n not in self.valid_nodes):
                         self.valid_nodes.append(n)
+                        print("ADD VALID OBJECT:%s" % n.name)
+                        if (n.type=="EMPTY" and n.dupli_type=="GROUP" and n.dupli_group not in self.export_groups):
+                            # found a group-instance
+                            # save them for later use
+                            self.export_groups.append(n.dupli_group)
                     n = n.parent
+
+        print("AFTER:%s" % self.valid_nodes)
 
         for obj in sorted(self.scene.objects, key=lambda x: x.name):
             if (obj in self.valid_nodes and obj.parent is None):
@@ -1843,6 +1865,41 @@ class DaeExporter:
 
         self.writel(S_ANIM, 0, "</library_animations>")
 
+    # export all used blender-groups as dedicated dae-file
+    def do_export_groups(self):
+        # alter the current config to export only selected objects
+        # no matter what layer they are part of
+        self.config["use_active_layers"]=False
+        self.config["use_export_selected"]=True
+        exportFolder = os.path.dirname(self.path)
+        # clone the group list
+        groupList = self.export_groups[:]
+        for group in self.export_groups:
+            if group in self.already_exported_groups:
+                # we already exported this group in this session
+                # prevent a neverending export loop which will absorb the universe
+                continue
+
+            # clear the last export's local data
+            self.clear()
+
+            print("Export-Group:%s" % group.name)
+            # unselect all objects
+            for obj in bpy.data.objects:
+                obj.select = False
+            # select all objects that are part of the group
+            for gobj in group.objects:
+                gobj.select = True
+                print("SELECT %s" % gobj.name)
+            
+            self.path = exportFolder + "/"+group.name+".dae"
+            print("Exporting to %s" % self.path)
+            self.export()
+            self.already_exported_groups.append(group)
+
+        print("GROUPS:%s" % self.export_groups)
+
+
     def export(self):
         self.writel(S_GEOM, 0, "<library_geometries>")
         self.writel(S_CONT, 0, "<library_controllers>")
@@ -1910,7 +1967,27 @@ class DaeExporter:
                  "path", "mesh_cache", "curve_cache", "material_cache",
                  "image_cache", "skeleton_info", "config", "valid_nodes",
                  "armature_for_morph", "used_bones", "wrongvtx_report",
-                 "skeletons", "action_constraints", "temp_meshes")
+                 "skeletons", "action_constraints", "temp_meshes","export_groups",
+                 "already_exported_groups")
+
+    def clear(self):
+        self.last_id = 0
+        self.sections = {}
+        self.path = None
+        self.mesh_cache = {}
+        self.temp_meshes = set()
+        self.curve_cache = {}
+        self.material_cache = {}
+        self.image_cache = {}
+        self.skeleton_info = {}
+        self.valid_nodes = []
+        self.armature_for_morph = {}
+        self.used_bones = []
+        self.wrongvtx_report = False
+        self.skeletons = []
+        self.action_constraints = []
+        self.export_groups = []
+        
 
     def __init__(self, path, kwargs, operator):
         self.operator = operator
@@ -1932,6 +2009,8 @@ class DaeExporter:
         self.wrongvtx_report = False
         self.skeletons = []
         self.action_constraints = []
+        self.export_groups = []
+        self.already_exported_groups = []
 
     def __enter__(self):
         return self
@@ -1944,5 +2023,6 @@ class DaeExporter:
 def save(operator, context, filepath="", use_selection=False, **kwargs):
     with DaeExporter(filepath, kwargs, operator) as exp:
         exp.export()
+        exp.do_export_groups()
 
     return {"FINISHED"}
